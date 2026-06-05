@@ -292,11 +292,11 @@
             constructor(x, y, color, isLeft) {
                 this.x = x;
                 this.y = y;
-                this.width = 50;
-                this.height = 50;
+                this.width = 75;
+                this.height = 75;
                 this.color = color;
                 this.isLeft = isLeft;
-                this.speed = 5;
+                this.speed = 3.5;
                 this.maxHealth = 100;
                 this.health = 100;
                 this.bullets = [];
@@ -319,102 +319,132 @@
                 if (this.isLeft) return;
 
                 this.aiMoveTimer++;
-                let targetX = this.x;
-                let targetY = this.y;
 
                 // === 1. 躲避敌方子弹 ===
-                let dodgeY = 0;
-                let threatDetected = false;
+                let dodgeX = 0, dodgeY = 0;
                 for (let b of enemy.bullets) {
                     if (b.vx > 0) continue;
                     const distX = Math.abs(b.x - this.x);
                     const distY = Math.abs(b.y - this.y);
                     if (distX < 250 && distY < 120) {
-                        threatDetected = true;
-                        dodgeY = b.y < this.y ? this.speed * 1.2 : -this.speed * 1.2;
+                        dodgeY = b.y < this.y ? this.speed * 1.4 : -this.speed * 1.4;
                         break;
                     }
                 }
 
-                // === 2. 躲避障碍物 ===
+                // === 2. 躲避障碍物（使用矩形最近点距离，陷阱优先） ===
                 let avoidX = 0, avoidY = 0;
+                let trapDanger = 0;
                 for (let obs of obstacles) {
                     if (obs.type === 'wall' && obs.health <= 0) continue;
-                    const obsCX = obs.x + obs.width / 2;
-                    const obsCY = obs.y + obs.height / 2;
-                    const ddx = this.x - obsCX;
-                    const ddy = this.y - obsCY;
-                    const dist = Math.sqrt(ddx * ddx + ddy * ddy);
-                    if (dist < 120) {
-                        const strength = (120 - dist) / 120;
-                        avoidX += (ddx / dist) * this.speed * strength * 1.5;
-                        avoidY += (ddy / dist) * this.speed * strength * 1.5;
+                    const closestX = Math.max(obs.x, Math.min(this.x, obs.x + obs.width));
+                    const closestY = Math.max(obs.y, Math.min(this.y, obs.y + obs.height));
+                    const ddx = this.x - closestX;
+                    const ddy = this.y - closestY;
+                    const dist = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
+
+                    if (obs.type === 'trap') {
+                        const trapRange = 240;
+                        if (dist < trapRange) {
+                            const strength = Math.pow((trapRange - dist) / trapRange, 0.7);
+                            avoidX += (ddx / dist) * this.speed * strength * 4.0;
+                            avoidY += (ddy / dist) * this.speed * strength * 4.0;
+                            trapDanger = Math.max(trapDanger, strength);
+                        }
+                    } else {
+                        const wallRange = 150;
+                        if (dist < wallRange) {
+                            const strength = (wallRange - dist) / wallRange;
+                            avoidX += (ddx / dist) * this.speed * strength * 2.0;
+                            avoidY += (ddy / dist) * this.speed * strength * 2.0;
+                        }
                     }
                 }
 
-                // === 3. 拾取道具 ===
-                let chasePowerUp = false;
-                let powerUpTarget = null;
+                // === 3. 选择目标行为 ===
+                let desiredX = 0, desiredY = 0;
+
+                // 评估道具安全性（远离陷阱的道具才值得捡）
+                let bestPowerUp = null;
+                let bestPowerUpScore = -Infinity;
                 for (let pu of powerUps) {
                     if (pu.life <= 0 || pu.collected) continue;
-                    const ddx = pu.x - this.x;
-                    const ddy = pu.y - this.y;
-                    const dist = Math.sqrt(ddx * ddx + ddy * ddy);
-                    if (dist < 300) {
-                        chasePowerUp = true;
-                        powerUpTarget = pu;
-                        break;
+                    const dx = pu.x - this.x;
+                    const dy = pu.y - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist > 450) continue;
+
+                    let trapPenalty = 0;
+                    for (let obs of obstacles) {
+                        if (obs.type !== 'trap') continue;
+                        const ocx = Math.max(obs.x, Math.min(pu.x, obs.x + obs.width));
+                        const ocy = Math.max(obs.y, Math.min(pu.y, obs.y + obs.height));
+                        const pd = Math.sqrt((pu.x - ocx) * (pu.x - ocx) + (pu.y - ocy) * (pu.y - ocy));
+                        if (pd < 160) trapPenalty += (160 - pd);
+                    }
+                    const score = 450 - dist - trapPenalty * 2.0;
+                    if (score > bestPowerUpScore) {
+                        bestPowerUpScore = score;
+                        bestPowerUp = pu;
                     }
                 }
 
-                // === 4. 执行移动 ===
-                if (chasePowerUp && powerUpTarget) {
-                    // 优先追道具
-                    const ddx = powerUpTarget.x - this.x;
-                    const ddy = powerUpTarget.y - this.y;
-                    const dist = Math.sqrt(ddx * ddx + ddy * ddy);
-                    if (dist > 5) {
-                        targetX += (ddx / dist) * this.speed * 0.9;
-                        targetY += (ddy / dist) * this.speed * 0.9;
-                    }
-                } else if (threatDetected) {
-                    targetY += dodgeY;
+                const canChasePowerUp = bestPowerUp && trapDanger < 0.5;
+                if (canChasePowerUp) {
+                    const dx = bestPowerUp.x - this.x;
+                    const dy = bestPowerUp.y - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                    desiredX = (dx / dist) * this.speed * 0.85;
+                    desiredY = (dy / dist) * this.speed * 0.85;
+                } else if (dodgeY !== 0) {
+                    desiredY = dodgeY;
                 } else {
                     // 追踪玩家Y
                     const dy = enemy.y - this.y;
                     if (Math.abs(dy) > 15) {
-                        targetY += Math.sign(dy) * this.speed * 0.85;
+                        desiredY = Math.sign(dy) * this.speed * 0.7;
                     }
                     // 保持距离
                     const dx = enemy.x - this.x;
                     const idealDistance = canvas.width * 0.35;
                     const currentDistance = Math.abs(dx);
                     if (currentDistance < idealDistance - 50) {
-                        targetX += this.speed * 0.6;
+                        desiredX = this.speed * 0.5;
                     } else if (currentDistance > idealDistance + 80) {
-                        targetX -= this.speed * 0.5;
+                        desiredX = -this.speed * 0.4;
                     } else {
                         if (this.aiMoveTimer % 40 === 0) {
-                            this.aiTargetY = this.y + (Math.random() - 0.5) * 200;
+                            this.aiTargetY = this.y + (Math.random() - 0.5) * 160;
                         }
                         const toTarget = this.aiTargetY - this.y;
                         if (Math.abs(toTarget) > 10) {
-                            targetY += Math.sign(toTarget) * this.speed * 0.4;
+                            desiredY += Math.sign(toTarget) * this.speed * 0.3;
                         }
                     }
                 }
 
-                // 应用障碍物避让
-                targetX += avoidX;
-                targetY += avoidY;
+                // 陷阱威胁大时，压制追击/随机移动冲动，优先撤离
+                if (trapDanger > 0.35) {
+                    desiredX *= 0.25;
+                    desiredY *= 0.25;
+                }
 
-                // 平滑移动
-                this.x += (targetX - this.x) * 0.5;
-                this.y += (targetY - this.y) * 0.5;
+                // === 4. 合并运动向量并限速 ===
+                let vx = desiredX + avoidX;
+                let vy = desiredY + avoidY;
+                const vLen = Math.sqrt(vx * vx + vy * vy) || 1;
+                const maxSpeed = this.speed * (trapDanger > 0.25 ? 1.25 : 1.0);
+                if (vLen > maxSpeed) {
+                    vx = (vx / vLen) * maxSpeed;
+                    vy = (vy / vLen) * maxSpeed;
+                }
+
+                this.x += vx;
+                this.y += vy;
 
                 // 边界限制
-                this.x = Math.max(canvas.width * 0.45, Math.min(canvas.width - 30, this.x));
-                this.y = Math.max(30, Math.min(canvas.height - 30, this.y));
+                this.x = Math.max(canvas.width * 0.45, Math.min(canvas.width - 45, this.x));
+                this.y = Math.max(45, Math.min(canvas.height - 45, this.y));
 
                 // === 5. AI射击逻辑 ===
                 const dy = enemy.y - this.y;
@@ -446,7 +476,7 @@
                 angle += (Math.random() - 0.5) * 0.15;
 
                 const speed = 10;
-                const baseX = this.x + (this.isLeft ? 30 : -30);
+                const baseX = this.x + (this.isLeft ? 45 : -45);
                 const finalAngle = this.isLeft ? angle : Math.PI + angle;
                 this.bullets.push({
                     x: baseX,
@@ -462,7 +492,7 @@
             update() {
                 // 引擎粒子
                 this.engines.push({
-                    x: this.x + (this.isLeft ? -20 : 20),
+                    x: this.x + (this.isLeft ? -30 : 30),
                     y: this.y,
                     vx: (Math.random() - 0.5) * 2 + (this.isLeft ? -3 : 3),
                     vy: (Math.random() - 0.5) * 2,
@@ -489,8 +519,8 @@
                 // P2不再由键盘控制，由AI控制
 
                 // 边界
-                this.x = Math.max(30, Math.min(canvas.width - 30, this.x));
-                this.y = Math.max(30, Math.min(canvas.height - 30, this.y));
+                this.x = Math.max(45, Math.min(canvas.width - 45, this.x));
+                this.y = Math.max(45, Math.min(canvas.height - 45, this.y));
 
                 // 更新子弹
                 for (let i = this.bullets.length - 1; i >= 0; i--) {
@@ -522,6 +552,7 @@
                 ctx.save();
                 ctx.translate(this.x, this.y);
                 ctx.rotate(this.isLeft ? 0 : Math.PI);
+                ctx.scale(1.5, 1.5);
 
                 // 飞船主体
                 ctx.beginPath();
@@ -540,7 +571,7 @@
                 ctx.fillStyle = gradient;
                 ctx.fill();
                 ctx.strokeStyle = this.isLeft ? '#ffaa66' : '#66ccff';
-                ctx.lineWidth = 2;
+                ctx.lineWidth = 1.33;
                 ctx.stroke();
 
                 // 驾驶舱
@@ -602,7 +633,7 @@
                     const spreadCount = 5;
                     const spreadAngle = Math.PI / 6; // 30度扇形
                     const speed = 10;
-                    const startX = this.x + (this.isLeft ? 30 : -30);
+                    const startX = this.x + (this.isLeft ? 45 : -45);
                     for (let i = 0; i < spreadCount; i++) {
                         const offset = (i - (spreadCount - 1) / 2) * (spreadAngle / (spreadCount - 1));
                         const angle = baseAngle + offset;
@@ -964,8 +995,8 @@
         function resolvePlayerObstacleCollision(player) {
             for (let obs of obstacles) {
                 if (obs.type !== 'wall' || obs.health <= 0) continue;
-                // 简化为圆形碰撞体（玩家半径约25）
-                if (circleRectCollision(player.x, player.y, 22, obs.x, obs.y, obs.width, obs.height)) {
+                // 简化为圆形碰撞体（玩家半径约38）
+                if (circleRectCollision(player.x, player.y, 33, obs.x, obs.y, obs.width, obs.height)) {
                     // 计算碰撞方向，将玩家推出
                     const cx = obs.x + obs.width / 2;
                     const cy = obs.y + obs.height / 2;
@@ -1021,7 +1052,7 @@
                 const dy = b.y - player2.y;
                 const dist = Math.sqrt(dx * dx + dy * dy);
 
-                if (dist < 30 && player2.invincible <= 0) {
+                if (dist < 45 && player2.invincible <= 0) {
                     player2.health -= b.damage;
                     player1.bullets.splice(i, 1);
                     drawHitEffect(b.x, b.y, '#4488ff');
@@ -1044,7 +1075,7 @@
                 const dy = b.y - player1.y;
                 const dist = Math.sqrt(dx * dx + dy * dy);
 
-                if (dist < 30 && player1.invincible <= 0) {
+                if (dist < 45 && player1.invincible <= 0) {
                     player1.health -= b.damage;
                     player2.bullets.splice(i, 1);
                     drawHitEffect(b.x, b.y, '#ff6644');
@@ -1067,7 +1098,7 @@
                     if (player.invincible > 0) return;
                     for (let obs of obstacles) {
                         if (obs.type !== 'trap') continue;
-                        if (circleRectCollision(player.x, player.y, 20, obs.x, obs.y, obs.width, obs.height)) {
+                        if (circleRectCollision(player.x, player.y, 30, obs.x, obs.y, obs.width, obs.height)) {
                             player.health -= 5;
                             drawHitEffect(player.x, player.y, player.isLeft ? '#ff6644' : '#4488ff');
                             if (player.health <= 0) {
@@ -1091,7 +1122,7 @@
                 // 检查P1
                 const dx1 = p.x - player1.x;
                 const dy1 = (p.y + Math.sin(p.floatPhase) * 5) - player1.y;
-                if (dx1 * dx1 + dy1 * dy1 < (p.radius + 25) * (p.radius + 25)) {
+                if (dx1 * dx1 + dy1 * dy1 < (p.radius + 38) * (p.radius + 38)) {
                     p.collected = true;
                     player1.shotgunMode = 15; // 15发散弹
                     player1.shotgunTimer = 600; // 10秒持续时间（60fps）
@@ -1102,7 +1133,7 @@
                 // 检查P2（AI也能捡道具）
                 const dx2 = p.x - player2.x;
                 const dy2 = (p.y + Math.sin(p.floatPhase) * 5) - player2.y;
-                if (dx2 * dx2 + dy2 * dy2 < (p.radius + 25) * (p.radius + 25)) {
+                if (dx2 * dx2 + dy2 * dy2 < (p.radius + 38) * (p.radius + 38)) {
                     p.collected = true;
                     player2.shotgunMode = 15;
                     player2.shotgunTimer = 600;
